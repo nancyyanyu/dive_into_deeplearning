@@ -321,3 +321,21 @@ class Classifier(Module):
         # we just pass the logits and compute the softmax and its log all at once inside the cross-entropy loss function
         fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         return fn(y, y_hat)
+
+    
+def cpu():
+    return tf.device('/CPU:0')
+
+def gpu(i):
+    return tf.device(f'/GPU:{i}')
+
+def num_gpus():
+    return len(tf.config.experimental.list_physical_devices('GPU'))
+
+def try_gpu(i=0):
+    if num_gpus() >= i + 1:
+        return gpu(i)
+    return cpu()
+
+def try_all_gpu():
+    return [gpu(i) for i in range(num_gpus())]
