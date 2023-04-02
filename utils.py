@@ -321,6 +321,12 @@ class Classifier(Module):
         # we just pass the logits and compute the softmax and its log all at once inside the cross-entropy loss function
         fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         return fn(y, y_hat)
+    
+    def layer_summary(self, X_shape):
+        X = tf.random.normal(X_shape)
+        for layer in self.net.layers:
+            X = layer(X)
+            print(layer.__class__.__name__,  'output shape:\t', X.shape)
 
     
 def cpu():
