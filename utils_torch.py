@@ -111,46 +111,6 @@ def set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend):
         axes.legend(legend)
     axes.grid()
 
-def download(url, folder='../data', sha1_hash=None):
-    """Download a file to folder and return the local filepath.
-    Defined in :numref:`sec_utils`"""
-    if not url.startswith('http'):
-        # For back compatability
-        url, sha1_hash = DATA_HUB[url]
-    os.makedirs(folder, exist_ok=True)
-    fname = os.path.join(folder, url.split('/')[-1])
-    # Check if hit cache
-    if os.path.exists(fname) and sha1_hash:
-        sha1 = hashlib.sha1()
-        with open(fname, 'rb') as f:
-            while True:
-                data = f.read(1048576)
-                if not data:
-                    break
-                sha1.update(data)
-        if sha1.hexdigest() == sha1_hash:
-            return fname
-    # Download
-    print(f'Downloading {fname} from {url}...')
-    r = requests.get(url, stream=True, verify=True)
-    with open(fname, 'wb') as f:
-        f.write(r.content)
-    return fname
-
-def extract(filename, folder=None):
-    """Extract a zip/tar file into folder.
-    Defined in :numref:`sec_utils`"""
-    base_dir = os.path.dirname(filename)
-    _, ext = os.path.splitext(filename)
-    assert ext in ('.zip', '.tar', '.gz'), 'Only support zip/tar files.'
-    if ext == '.zip':
-        fp = zipfile.ZipFile(filename, 'r')
-    else:
-        fp = tarfile.open(filename, 'r')
-    if folder is None:
-        folder = base_dir
-    fp.extractall(folder)
-
 def plot(X, Y=None, xlabel=None, ylabel=None, legend=[], xlim=None,
          ylim=None, xscale='linear', yscale='linear',
          fmts=('-', 'm--', 'g-.', 'r:'), figsize=(3.5, 2.5), axes=None):
@@ -200,33 +160,6 @@ class HyperParameters:
                         if k not in set(ignore+['self']) and not k.startswith('_')}
         for k, v in self.hparams.items():
             setattr(self, k, v)
-
-def cpu():
-    """Get the CPU device.
-    Defined in :numref:`sec_use_gpu`"""
-    return torch.device('cpu')
-
-def gpu(i=0):
-    """Get a GPU device.
-    Defined in :numref:`sec_use_gpu`"""
-    return torch.device(f'cuda:{i}')
-
-def num_gpus():
-    """Get the number of available GPUs.
-    Defined in :numref:`sec_use_gpu`"""
-    return torch.cuda.device_count()
-
-def try_gpu(i=0):
-    """Return gpu(i) if exists, otherwise return cpu().
-    Defined in :numref:`sec_use_gpu`"""
-    if num_gpus() >= i + 1:
-        return gpu(i)
-    return cpu()
-
-def try_all_gpus():
-    """Return all available GPUs, or [cpu(),] if no GPU exists.
-    Defined in :numref:`sec_use_gpu`"""
-    return [gpu(i) for i in range(num_gpus())]
 
 class ProgressBoard(HyperParameters):
     """The board that plots data points in animation.
@@ -337,7 +270,7 @@ class Module(nn_Module, HyperParameters):
 class DataModule(HyperParameters):
     """The base class of data.
     Defined in :numref:`subsec_oo-design-models`"""
-    def __init__(self, root='./data', num_workers=4):
+    def __init__(self, root='../data', num_workers=4):
         self.save_hyperparameters()
 
     def get_dataloader(self, train):
@@ -359,11 +292,18 @@ class DataModule(HyperParameters):
 class Trainer(HyperParameters):
     """The base class for training models with data.
     Defined in :numref:`subsec_oo-design-models`"""
-    def __init__(self, max_epochs, number_of_gpus=0, gradient_clip_val=0):
-        """Defined in :numref:`sec_use_gpu`"""
-        self.save_hyperparameters()
-        self.gpus = [gpu(i) for i in range(min(number_of_gpus, num_gpus()))]
-    
+
+    def prepare_data(self, data):
+        self.train_dataloader = data.train_dataloader()
+        self.val_dataloader = data.val_dataloader()
+        self.num_train_batches = len(self.train_dataloader)
+        self.num_val_batches = (len(self.val_dataloader)
+                                if self.val_dataloader is not None else 0)
+
+    def prepare_model(self, model):
+        model.trainer = self
+        model.board.xlim = [0, self.max_epochs]
+        self.model = model
 
     def fit(self, model, data):
         self.prepare_data(data)
@@ -374,6 +314,13 @@ class Trainer(HyperParameters):
         self.val_batch_idx = 0
         for self.epoch in range(self.max_epochs):
             self.fit_epoch()
+
+    def fit_epoch(self):
+        raise NotImplementedError
+
+    def prepare_batch(self, batch):
+        """Defined in :numref:`sec_linear_scratch`"""
+        return batch
 
     def fit_epoch(self):
         """Defined in :numref:`sec_linear_scratch`"""
@@ -395,12 +342,11 @@ class Trainer(HyperParameters):
                 self.model.validation_step(self.prepare_batch(batch))
             self.val_batch_idx += 1
 
-    def prepare_data(self, data):
-        self.train_dataloader = data.train_dataloader()
-        self.val_dataloader = data.val_dataloader()
-        self.num_train_batches = len(self.train_dataloader)
-        self.num_val_batches = (len(self.val_dataloader)
-                                if self.val_dataloader is not None else 0)
+    def __init__(self, max_epochs, number_of_gpus=0, gradient_clip_val=0):
+        """Defined in :numref:`sec_use_gpu`"""
+        self.save_hyperparameters()
+        self.gpus = [gpu(i) for i in range(min(number_of_gpus, num_gpus()))]
+    
 
     def prepare_batch(self, batch):
         """Defined in :numref:`sec_use_gpu`"""
@@ -588,6 +534,32 @@ class SoftmaxRegression(Classifier):
     def forward(self, X):
         return self.net(X)
 
+def cpu():
+    """Get the CPU device.
+    Defined in :numref:`sec_use_gpu`"""
+    return torch.device('cpu')
+
+def gpu(i=0):
+    """Get a GPU device.
+    Defined in :numref:`sec_use_gpu`"""
+    return torch.device(f'cuda:{i}')
+
+def num_gpus():
+    """Get the number of available GPUs.
+    Defined in :numref:`sec_use_gpu`"""
+    return torch.cuda.device_count()
+
+def try_gpu(i=0):
+    """Return gpu(i) if exists, otherwise return cpu().
+    Defined in :numref:`sec_use_gpu`"""
+    if num_gpus() >= i + 1:
+        return gpu(i)
+    return cpu()
+
+def try_all_gpus():
+    """Return all available GPUs, or [cpu(),] if no GPU exists.
+    Defined in :numref:`sec_use_gpu`"""
+    return [gpu(i) for i in range(num_gpus())]
 
 def corr2d(X, K):
     """Compute 2D cross-correlation.
@@ -706,17 +678,6 @@ class RNNScratch(Module):
             outputs.append(state)
         return outputs, state
 
-class RNN(Module):
-    """The RNN model implemented with high-level APIs.
-    Defined in :numref:`sec_rnn-concise`"""
-    def __init__(self, num_inputs, num_hiddens):
-        super().__init__()
-        self.save_hyperparameters()
-        self.rnn = nn.RNN(num_inputs, num_hiddens)
-
-    def forward(self, inputs, H=None):
-        return self.rnn(inputs, H)
-    
 def check_len(a, n):
     """Check the length of a list.
     Defined in :numref:`sec_rnn-scratch`"""
@@ -782,190 +743,3 @@ class RNNLMScratch(Classifier):
                 outputs.append(int(reshape(argmax(Y, axis=2), 1)))
         return ''.join([vocab.idx_to_token[i] for i in outputs])
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-    
-=======
->>>>>>> 74c8dcd... ch10
-=======
-    
->>>>>>> 4299bd5... update ch10 ch11
-class RNN(Module):
-    """The RNN model implemented with high-level APIs.
-    Defined in :numref:`sec_rnn-concise`"""
-    def __init__(self, num_inputs, num_hiddens):
-        super().__init__()
-        self.save_hyperparameters()
-        self.rnn = nn.RNN(num_inputs, num_hiddens)
-<<<<<<< HEAD
-
-    def forward(self, inputs, H=None):
-        return self.rnn(inputs, H)
-
-class GRU(RNN):
-    """The multi-layer GRU model.
-    Defined in :numref:`sec_deep_rnn`"""
-    def __init__(self, num_inputs, num_hiddens, num_layers, dropout=0):
-        Module.__init__(self)
-        self.save_hyperparameters()
-        self.rnn = nn.GRU(num_inputs, num_hiddens, num_layers,
-                          dropout=dropout)
-        
-        
-class MTFraEng(DataModule):
-    """The English-French dataset."""
-    def __init__(self, batch_size, num_steps=9, num_train=512, num_val=128):
-        """Defined in :numref:`sec_machine_translation`"""
-        super(MTFraEng, self).__init__()
-        self.save_hyperparameters()
-        self.arrays, self.src_vocab, self.tgt_vocab = self._build_arrays(
-            self._download())
-        
-    def _download(self):
-        extract(download(
-            DATA_URL+'fra-eng.zip', self.root))
-        with open(self.root + '/fra-eng/fra.txt', encoding='utf-8') as f:
-            return f.read()
-
-    def _preprocess(self, text):
-        """Defined in :numref:`sec_machine_translation`"""
-        # Replace non-breaking space with space
-        text = text.replace('\u202f', ' ').replace('\xa0', ' ')
-        # Insert space between words and punctuation marks
-        no_space = lambda char, prev_char: char in ',.!?' and prev_char != ' '
-        out = [' ' + char if i > 0 and no_space(char, text[i - 1]) else char
-               for i, char in enumerate(text.lower())]
-        return ''.join(out)
-
-    def _tokenize(self, text, max_examples=None):
-        """Defined in :numref:`sec_machine_translation`"""
-        src, tgt = [], []
-        for i, line in enumerate(text.split('\n')):
-            if max_examples and i > max_examples: break
-            parts = line.split('\t')
-            if len(parts) == 2:
-                # Skip empty tokens
-                src.append([t for t in f'{parts[0]} <eos>'.split(' ') if t])
-                tgt.append([t for t in f'{parts[1]} <eos>'.split(' ') if t])
-        return src, tgt
-
-    def _build_arrays(self, raw_text, src_vocab=None, tgt_vocab=None):
-        def _build_array(sentences, vocab, is_tgt=False):
-            pad_or_trim = lambda seq, t: (
-                seq[:t] if len(seq) > t else seq + ['<pad>'] * (t - len(seq)))
-            sentences = [pad_or_trim(s, self.num_steps) for s in sentences]
-            if is_tgt:
-                sentences = [['<bos>'] + s for s in sentences]
-            if vocab is None:
-                vocab = Vocab(sentences, min_freq=2)
-            array = tensor([vocab[s] for s in sentences])
-            valid_len = reduce_sum(
-                astype(array != vocab['<pad>'], int32), 1)
-            return array, vocab, valid_len
-        src, tgt = self._tokenize(self._preprocess(raw_text),
-                                  self.num_train + self.num_val)
-        src_array, src_vocab, src_valid_len = _build_array(src, src_vocab)
-        tgt_array, tgt_vocab, _ = _build_array(tgt, tgt_vocab, True)
-        return ((src_array, tgt_array[:,:-1], src_valid_len, tgt_array[:,1:]),
-                src_vocab, tgt_vocab)
-
-    def get_dataloader(self, train):
-        """Defined in :numref:`subsec_loading-seq-fixed-len`"""
-        idx = slice(0, self.num_train) if train else slice(self.num_train, None)
-        return self.get_tensorloader(self.arrays, train, idx)
-
-    def build(self, src_sentences, tgt_sentences):
-        """Defined in :numref:`subsec_loading-seq-fixed-len`"""
-        raw_text = '\n'.join([src + '\t' + tgt for src, tgt in zip(
-            src_sentences, tgt_sentences)])
-        arrays, _, _ = self._build_arrays(
-            raw_text, self.src_vocab, self.tgt_vocab)
-        return arrays
-=======
-
-    def forward(self, inputs, H=None):
-        return self.rnn(inputs, H)
-<<<<<<< HEAD
->>>>>>> 74c8dcd... ch10
-=======
-
-class GRU(RNN):
-    """The multi-layer GRU model.
-    Defined in :numref:`sec_deep_rnn`"""
-    def __init__(self, num_inputs, num_hiddens, num_layers, dropout=0):
-        Module.__init__(self)
-        self.save_hyperparameters()
-        self.rnn = nn.GRU(num_inputs, num_hiddens, num_layers,
-                          dropout=dropout)
-        
-        
-class MTFraEng(DataModule):
-    """The English-French dataset."""
-    def __init__(self, batch_size, num_steps=9, num_train=512, num_val=128):
-        """Defined in :numref:`sec_machine_translation`"""
-        super(MTFraEng, self).__init__()
-        self.save_hyperparameters()
-        self.arrays, self.src_vocab, self.tgt_vocab = self._build_arrays(
-            self._download())
-        
-    def _download(self):
-        extract(download(
-            DATA_URL+'fra-eng.zip', self.root))
-        with open(self.root + '/fra-eng/fra.txt', encoding='utf-8') as f:
-            return f.read()
-
-    def _preprocess(self, text):
-        """Defined in :numref:`sec_machine_translation`"""
-        # Replace non-breaking space with space
-        text = text.replace('\u202f', ' ').replace('\xa0', ' ')
-        # Insert space between words and punctuation marks
-        no_space = lambda char, prev_char: char in ',.!?' and prev_char != ' '
-        out = [' ' + char if i > 0 and no_space(char, text[i - 1]) else char
-               for i, char in enumerate(text.lower())]
-        return ''.join(out)
-
-    def _tokenize(self, text, max_examples=None):
-        """Defined in :numref:`sec_machine_translation`"""
-        src, tgt = [], []
-        for i, line in enumerate(text.split('\n')):
-            if max_examples and i > max_examples: break
-            parts = line.split('\t')
-            if len(parts) == 2:
-                # Skip empty tokens
-                src.append([t for t in f'{parts[0]} <eos>'.split(' ') if t])
-                tgt.append([t for t in f'{parts[1]} <eos>'.split(' ') if t])
-        return src, tgt
-
-    def _build_arrays(self, raw_text, src_vocab=None, tgt_vocab=None):
-        def _build_array(sentences, vocab, is_tgt=False):
-            pad_or_trim = lambda seq, t: (
-                seq[:t] if len(seq) > t else seq + ['<pad>'] * (t - len(seq)))
-            sentences = [pad_or_trim(s, self.num_steps) for s in sentences]
-            if is_tgt:
-                sentences = [['<bos>'] + s for s in sentences]
-            if vocab is None:
-                vocab = Vocab(sentences, min_freq=2)
-            array = tensor([vocab[s] for s in sentences])
-            valid_len = reduce_sum(
-                astype(array != vocab['<pad>'], int32), 1)
-            return array, vocab, valid_len
-        src, tgt = self._tokenize(self._preprocess(raw_text),
-                                  self.num_train + self.num_val)
-        src_array, src_vocab, src_valid_len = _build_array(src, src_vocab)
-        tgt_array, tgt_vocab, _ = _build_array(tgt, tgt_vocab, True)
-        return ((src_array, tgt_array[:,:-1], src_valid_len, tgt_array[:,1:]),
-                src_vocab, tgt_vocab)
-
-    def get_dataloader(self, train):
-        """Defined in :numref:`subsec_loading-seq-fixed-len`"""
-        idx = slice(0, self.num_train) if train else slice(self.num_train, None)
-        return self.get_tensorloader(self.arrays, train, idx)
-
-    def build(self, src_sentences, tgt_sentences):
-        """Defined in :numref:`subsec_loading-seq-fixed-len`"""
-        raw_text = '\n'.join([src + '\t' + tgt for src, tgt in zip(
-            src_sentences, tgt_sentences)])
-        arrays, _, _ = self._build_arrays(
-            raw_text, self.src_vocab, self.tgt_vocab)
-        return arrays
->>>>>>> 4299bd5... update ch10 ch11

@@ -384,6 +384,45 @@ class Classifier(Module):
             X = layer(X)
             print(layer.__class__.__name__,  'output shape:\t', X.shape)
 
+class TimeMachine(DataModule):
+    """The Time Machine dataset.
+    Defined in :numref:`sec_text-sequence`"""
+    def _download(self):
+        fname = download(DATA_URL + 'timemachine.txt', self.root,
+                             '090b5e7e70c295757f55df93cb0a180b9691891a')
+        with open(fname) as f:
+            return f.read()
+
+    def _preprocess(self, text):
+        """Defined in :numref:`sec_text-sequence`"""
+        return re.sub('[^A-Za-z]+', ' ', text).lower()
+
+    def _tokenize(self, text):
+        """Defined in :numref:`sec_text-sequence`"""
+        return list(text)
+
+    def build(self, raw_text, vocab=None):
+        """Defined in :numref:`sec_text-sequence`"""
+        tokens = self._tokenize(self._preprocess(raw_text))
+        if vocab is None: vocab = Vocab(tokens)
+        corpus = [vocab[token] for token in tokens]
+        return corpus, vocab
+
+    def __init__(self, batch_size, num_steps, num_train=10000, num_val=5000):
+        """Defined in :numref:`sec_language-model`"""
+        super(TimeMachine, self).__init__()
+        self.save_hyperparameters()
+        corpus, self.vocab = self.build(self._download())
+        array = tf.constant([corpus[i:i+num_steps+1]
+                            for i in range(len(corpus)-num_steps)])
+        self.X, self.Y = array[:,:-1], array[:,1:]
+
+    def get_dataloader(self, train):
+        """Defined in :numref:`subsec_partitioning-seqs`"""
+        idx = slice(0, self.num_train) if train else slice(
+            self.num_train, self.num_train + self.num_val)
+        return self.get_tensorloader([self.X, self.Y], train, idx)
+
     
 def cpu():
     return tf.device('/CPU:0')
