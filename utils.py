@@ -22,6 +22,22 @@ def use_svg_display():
     Defined in :numref:`sec_calculus`"""
     backend_inline.set_matplotlib_formats('svg')
 
+def set_figsize(figsize=(3.5, 2.5)):
+    """Set the figure size for matplotlib.
+    Defined in :numref:`sec_calculus`"""
+    use_svg_display()
+    plt.rcParams['figure.figsize'] = figsize
+
+def set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend):
+    """Set the axes for matplotlib.
+    Defined in :numref:`sec_calculus`"""
+    axes.set_xlabel(xlabel), axes.set_ylabel(ylabel)
+    axes.set_xscale(xscale), axes.set_yscale(yscale)
+    axes.set_xlim(xlim),     axes.set_ylim(ylim)
+    if legend:
+        axes.legend(legend)
+    axes.grid()
+
 def download(url, folder='../data', sha1_hash=None):
     """Download a file to folder and return the local filepath.
     Defined in :numref:`sec_utils`"""
@@ -61,6 +77,32 @@ def extract(filename, folder=None):
     if folder is None:
         folder = base_dir
     fp.extractall(folder)
+
+def plot(X, Y=None, xlabel=None, ylabel=None, legend=[], xlim=None,
+         ylim=None, xscale='linear', yscale='linear',
+         fmts=('-', 'm--', 'g-.', 'r:'), figsize=(3.5, 2.5), axes=None):
+    """Plot data points.
+    Defined in :numref:`sec_calculus`"""
+
+    def has_one_axis(X):  # True if X (tensor or list) has 1 axis
+        return (hasattr(X, "ndim") and X.ndim == 1 or isinstance(X, list)
+                and not hasattr(X[0], "__len__"))
+
+    if has_one_axis(X): X = [X]
+    if Y is None:
+        X, Y = [[]] * len(X), X
+    elif has_one_axis(Y):
+        Y = [Y]
+    if len(X) != len(Y):
+        X = X * len(Y)
+
+    set_figsize(figsize)
+    if axes is None:
+        axes = plt.gca()
+    axes.cla()
+    for x, y, fmt in zip(X, Y, fmts):
+        axes.plot(x,y,fmt) if len(x) else axes.plot(y,fmt)
+    set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend)
 
 class HyperParameters:
     """The base class of hyperparameters."""
@@ -250,7 +292,9 @@ class Trainer(HyperParameters):
             with tf.GradientTape() as t:
                 loss = self.model.training_step(self.prepare_batch(batch))
             grads = t.gradient(loss, self.model.trainable_variables)
-
+            
+            if self.gradient_clip_val > 0:
+                grads = self.clip_gradients(self.gradient_clip_val, grads)
             # if self.gradient_clip_val
             self.optim.apply_gradients(
                 zip(grads, self.model.trainable_variables))
@@ -263,6 +307,18 @@ class Trainer(HyperParameters):
         for batch in self.val_dataloader:
             self.model.validation_step(self.prepare_batch(batch))
             self.val_batch_idx = 0
+            
+    def clip_gradients(self, grad_clip_val, grads):
+        grad_clip_val = tf.constant(grad_clip_val, dtype=tf.float32)
+        new_grads = [tf.convert_to_tensor(grad) if isinstance(
+            grad, tf.IndexedSlices) else grad for grad in grads]
+        norm = tf.math.sqrt(sum((tf.reduce_sum(grad ** 2) for grad in new_grads)))
+        if tf.greater(norm, grad_clip_val):
+            for i, grad in enumerate(new_grads):
+                new_grads[i] = grad * grad_clip_val / norm
+            return new_grads
+        return grads
+    
             
 class FashionMNIST(DataModule):
     def __init__(self, batch_size=64, resize=(28, 28)):
@@ -328,6 +384,71 @@ class Classifier(Module):
             X = layer(X)
             print(layer.__class__.__name__,  'output shape:\t', X.shape)
 
+<<<<<<< HEAD
+
+class LinearRegressionKeras(Module):
+    def __init__(self, lr):
+        super().__init__()
+        self.save_hyperparameters()
+        initializer = tf.initializers.RandomNormal(stddev=0.01)
+        # only generate a single scalar output, so set the parameter to 1
+        self.net = tf.keras.layers.Dense(1, kernel_initializer=initializer)
+        
+    def forward(self, X):
+        # invoke the built-in __call__ method of the predefined layers to compute the outputs.
+        return self.net(X)
+    
+    def loss(self, y_hat, y):
+        fn = tf.keras.losses.MeanSquaredError()
+        return fn(y_hat, y)
+    
+    def configure_optimizers(self):
+        return tf.keras.optimizers.SGD(self.lr)
+    
+    def get_w_b(self):
+        return self.get_weights()[0], self.get_weights()[1]
+    
+=======
+class TimeMachine(DataModule):
+    """The Time Machine dataset.
+    Defined in :numref:`sec_text-sequence`"""
+    def _download(self):
+        fname = download(DATA_URL + 'timemachine.txt', self.root,
+                             '090b5e7e70c295757f55df93cb0a180b9691891a')
+        with open(fname) as f:
+            return f.read()
+
+    def _preprocess(self, text):
+        """Defined in :numref:`sec_text-sequence`"""
+        return re.sub('[^A-Za-z]+', ' ', text).lower()
+
+    def _tokenize(self, text):
+        """Defined in :numref:`sec_text-sequence`"""
+        return list(text)
+
+    def build(self, raw_text, vocab=None):
+        """Defined in :numref:`sec_text-sequence`"""
+        tokens = self._tokenize(self._preprocess(raw_text))
+        if vocab is None: vocab = Vocab(tokens)
+        corpus = [vocab[token] for token in tokens]
+        return corpus, vocab
+
+    def __init__(self, batch_size, num_steps, num_train=10000, num_val=5000):
+        """Defined in :numref:`sec_language-model`"""
+        super(TimeMachine, self).__init__()
+        self.save_hyperparameters()
+        corpus, self.vocab = self.build(self._download())
+        array = tf.constant([corpus[i:i+num_steps+1]
+                            for i in range(len(corpus)-num_steps)])
+        self.X, self.Y = array[:,:-1], array[:,1:]
+
+    def get_dataloader(self, train):
+        """Defined in :numref:`subsec_partitioning-seqs`"""
+        idx = slice(0, self.num_train) if train else slice(
+            self.num_train, self.num_train + self.num_val)
+        return self.get_tensorloader([self.X, self.Y], train, idx)
+
+>>>>>>> 2624afc... ch9
     
 def cpu():
     return tf.device('/CPU:0')
