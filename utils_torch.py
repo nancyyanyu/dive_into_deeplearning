@@ -706,6 +706,17 @@ class RNNScratch(Module):
             outputs.append(state)
         return outputs, state
 
+class RNN(Module):
+    """The RNN model implemented with high-level APIs.
+    Defined in :numref:`sec_rnn-concise`"""
+    def __init__(self, num_inputs, num_hiddens):
+        super().__init__()
+        self.save_hyperparameters()
+        self.rnn = nn.RNN(num_inputs, num_hiddens)
+
+    def forward(self, inputs, H=None):
+        return self.rnn(inputs, H)
+    
 def check_len(a, n):
     """Check the length of a list.
     Defined in :numref:`sec_rnn-scratch`"""
@@ -771,13 +782,11 @@ class RNNLMScratch(Classifier):
                 outputs.append(int(reshape(argmax(Y, axis=2), 1)))
         return ''.join([vocab.idx_to_token[i] for i in outputs])
 
-class RNN(Module):
-    """The RNN model implemented with high-level APIs.
-    Defined in :numref:`sec_rnn-concise`"""
-    def __init__(self, num_inputs, num_hiddens):
-        super().__init__()
+class GRU(RNN):
+    """The multi-layer GRU model.
+    Defined in :numref:`sec_deep_rnn`"""
+    def __init__(self, num_inputs, num_hiddens, num_layers, dropout=0):
+        Module.__init__(self)
         self.save_hyperparameters()
-        self.rnn = nn.RNN(num_inputs, num_hiddens)
-
-    def forward(self, inputs, H=None):
-        return self.rnn(inputs, H)
+        self.rnn = nn.GRU(num_inputs, num_hiddens, num_layers,
+                          dropout=dropout)
