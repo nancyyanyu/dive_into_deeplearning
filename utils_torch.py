@@ -782,7 +782,10 @@ class RNNLMScratch(Classifier):
                 outputs.append(int(reshape(argmax(Y, axis=2), 1)))
         return ''.join([vocab.idx_to_token[i] for i in outputs])
 
+<<<<<<< HEAD
     
+=======
+>>>>>>> 74c8dcd... ch10
 class RNN(Module):
     """The RNN model implemented with high-level APIs.
     Defined in :numref:`sec_rnn-concise`"""
@@ -790,6 +793,7 @@ class RNN(Module):
         super().__init__()
         self.save_hyperparameters()
         self.rnn = nn.RNN(num_inputs, num_hiddens)
+<<<<<<< HEAD
 
     def forward(self, inputs, H=None):
         return self.rnn(inputs, H)
@@ -873,3 +877,8 @@ class MTFraEng(DataModule):
         arrays, _, _ = self._build_arrays(
             raw_text, self.src_vocab, self.tgt_vocab)
         return arrays
+=======
+
+    def forward(self, inputs, H=None):
+        return self.rnn(inputs, H)
+>>>>>>> 74c8dcd... ch10
