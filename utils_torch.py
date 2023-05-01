@@ -873,3 +873,153 @@ class MTFraEng(DataModule):
         arrays, _, _ = self._build_arrays(
             raw_text, self.src_vocab, self.tgt_vocab)
         return arrays
+
+    
+class Encoder(nn.Module):
+    """The base encoder interface for the encoder-decoder architecture."""
+
+    def __init__(self):
+        super().__init__()
+
+    # Later there can be additional arguments (e.g., length excluding padding)
+    def forward(self, X, *args):
+        # encoder takes variable-length sequences as input X
+        raise NotImplementedError
+
+class Decoder(nn.Module):  # @save
+    """The base decoder interface for the encoder-decoder architecture."""
+
+    def __init__(self):
+        super().__init__()
+
+    # Later there can be additional arguments (e.g., length excluding padding)
+    def init_state(self, enc_all_outputs, *args):
+        # convert the encoder output (enc_all_outputs) into the encoded state.
+        raise NotImplementedError
+
+    def forward(self, X, state):
+        raise NotImplementedError
+        
+def init_seq2seq(module):
+    """Initialize weights for Seq2Seq."""
+    if type(module) == nn.Linear:
+        nn.init.xavier_uniform_(module.weight)
+    if type(module) == nn.GRU:
+        """
+           module._flat_weights_names = ['weight_ih_l0',
+                                         'weight_hh_l0',
+                                         'bias_ih_l0',
+                                         'bias_hh_l0',
+                                         'weight_ih_l1',
+                                         'weight_hh_l1',
+                                         'bias_ih_l1',
+                                         'bias_hh_l1']
+        """
+        for param in module._flat_weights_names:
+
+            if "weight" in param:
+                nn.init.xavier_uniform_(module._parameters[param])
+
+
+class Seq2SeqEncoder(Encoder):
+    def __init__(self, vocab_size, embed_size,
+                 num_hiddens, num_layers, dropout=0):
+        super().__init__()
+        # an embedding layer to obtain the feature vector for each token in the input sequence.
+        # The weight of an embedding layer is a matrix,
+        # number of rows corresponds to the size of the input vocabulary (vocab_size);
+        # number of columns corresponds to the feature vector’s dimension (embed_size).
+        # For any input token index i, the embedding layer fetches the i-th row (starting from 0) of 
+        # the weight matrix to return its feature vector
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.rnn = GRU(embed_size, num_hiddens, num_layers, dropout)
+        self.apply(init_seq2seq)
+
+    def forward(self, X, *args):
+        # X shape: (batch_size, num_steps)
+        embs = self.embedding(transpose(X).type(torch.int64))
+        # embs shape: (num_steps, batch_size, embed_size)
+        outputs, state = self.rnn(embs)
+        # outputs shape: (num_steps, batch_size, num_hiddens)
+        # state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, state
+    
+
+class EncoderDecoder(Classifier):
+    def __init__(self, encoder, decoder):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+
+    def forward(self, enc_X, dec_X, *args):
+        # the encoder is used to produce the encoded state
+        enc_all_outputs = self.encoder(enc_X, *args)
+        # this state will be used by the decoder as one of its input.
+        dec_state = self.decoder.init_state(enc_all_outputs, *args)
+        return self.decoder(dec_X, dec_state)[0]
+    
+    def predict_step(self, batch, device, num_steps, save_attention_weights=False):
+        batch = [to(a, device) for a in batch]
+        
+        src, tgt, src_valid_len, _ = batch
+        enc_all_outputs = self.encoder(src, src_valid_len)
+        dec_state = self.decoder.init_state(enc_all_outputs, src_valid_len)
+        outputs, attention_weights = [tgt[:, 0].unsqueeze(1), ], []
+        for _ in range(num_steps):
+            Y, dec_state = self.decoder(outputs[-1], dec_state)
+            outputs.append(Y.argmax(2))
+            # Save attention weights (to be covered later)
+            if save_attention_weights:
+                attention_weights.append(self.decoder.attention_weights)
+        return torch.cat(outputs[1:], 1), attention_weights
+        
+    
+class Seq2Seq(EncoderDecoder):
+    def __init__(self, encoder, decoder, tgt_pad, lr):
+        super().__init__(encoder, decoder)
+        self.save_hyperparameters()
+        
+    def forward(self, enc_X, dec_X, *args):
+        # the encoder is used to produce the encoded state
+        enc_all_outputs = self.encoder(enc_X, *args)
+        # this state will be used by the decoder as one of its input.
+        dec_state = self.decoder.init_state(enc_all_outputs, *args)
+        return self.decoder(dec_X, dec_state)[0]
+
+    def validation_step(self, batch):
+        Y_hat = self(*batch[:-1])
+        self.plot('loss', self.loss(Y_hat, batch[-1]), train=False)
+
+    def configure_optimizers(self):
+        # Adam optimizer is used here
+        return torch.optim.Adam(self.parameters(), lr=self.lr)
+
+    def loss(self, Y_hat, Y):
+        # Loss Function with Masking
+        """
+        Recall that <pad> tokens are appended to the end of sequences 
+        so sequences of varying lengths can be efficiently loaded in minibatches of the same shape.
+        However, prediction of padding tokens should be excluded from loss calculations. 
+        To this end, we can mask irrelevant entries with zero values 
+        so that multiplication of any irrelevant prediction with zero equals to zero.
+        """
+        l = super().loss(Y_hat, Y, averaged=False)
+        mask = (Y.reshape(-1) != self.tgt_pad).type(torch.float32)
+        return (l*mask).sum()/mask.sum()
+    
+    
+def bleu(pred_seq, label_seq, k):  #@save
+    """Compute the BLEU."""
+    pred_tokens, label_tokens = pred_seq.split(' '), label_seq.split(' ')
+    len_pred, len_label = len(pred_tokens), len(label_tokens)
+    score = math.exp(min(0, 1 - len_label / len_pred))
+    for n in range(1, min(k, len_pred) + 1):
+        num_matches, label_subs = 0, collections.defaultdict(int)
+        for i in range(len_label - n + 1):
+            label_subs[' '.join(label_tokens[i: i + n])] += 1
+        for i in range(len_pred - n + 1):
+            if label_subs[' '.join(pred_tokens[i: i + n])] > 0:
+                num_matches += 1
+                label_subs[' '.join(pred_tokens[i: i + n])] -= 1
+        score *= math.pow(num_matches / (len_pred - n + 1), math.pow(0.5, n))
+    return score
