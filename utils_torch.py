@@ -782,14 +782,7 @@ class RNNLMScratch(Classifier):
                 outputs.append(int(reshape(argmax(Y, axis=2), 1)))
         return ''.join([vocab.idx_to_token[i] for i in outputs])
 
-<<<<<<< HEAD
-<<<<<<< HEAD
     
-=======
->>>>>>> 74c8dcd... ch10
-=======
-    
->>>>>>> 4299bd5... update ch10 ch11
 class RNN(Module):
     """The RNN model implemented with high-level APIs.
     Defined in :numref:`sec_rnn-concise`"""
@@ -797,7 +790,6 @@ class RNN(Module):
         super().__init__()
         self.save_hyperparameters()
         self.rnn = nn.RNN(num_inputs, num_hiddens)
-<<<<<<< HEAD
 
     def forward(self, inputs, H=None):
         return self.rnn(inputs, H)
@@ -881,91 +873,153 @@ class MTFraEng(DataModule):
         arrays, _, _ = self._build_arrays(
             raw_text, self.src_vocab, self.tgt_vocab)
         return arrays
-=======
 
-    def forward(self, inputs, H=None):
-        return self.rnn(inputs, H)
-<<<<<<< HEAD
->>>>>>> 74c8dcd... ch10
-=======
+    
+class Encoder(nn.Module):
+    """The base encoder interface for the encoder-decoder architecture."""
 
-class GRU(RNN):
-    """The multi-layer GRU model.
-    Defined in :numref:`sec_deep_rnn`"""
-    def __init__(self, num_inputs, num_hiddens, num_layers, dropout=0):
-        Module.__init__(self)
+    def __init__(self):
+        super().__init__()
+
+    # Later there can be additional arguments (e.g., length excluding padding)
+    def forward(self, X, *args):
+        # encoder takes variable-length sequences as input X
+        raise NotImplementedError
+
+class Decoder(nn.Module):  # @save
+    """The base decoder interface for the encoder-decoder architecture."""
+
+    def __init__(self):
+        super().__init__()
+
+    # Later there can be additional arguments (e.g., length excluding padding)
+    def init_state(self, enc_all_outputs, *args):
+        # convert the encoder output (enc_all_outputs) into the encoded state.
+        raise NotImplementedError
+
+    def forward(self, X, state):
+        raise NotImplementedError
+        
+def init_seq2seq(module):
+    """Initialize weights for Seq2Seq."""
+    if type(module) == nn.Linear:
+        nn.init.xavier_uniform_(module.weight)
+    if type(module) == nn.GRU:
+        """
+           module._flat_weights_names = ['weight_ih_l0',
+                                         'weight_hh_l0',
+                                         'bias_ih_l0',
+                                         'bias_hh_l0',
+                                         'weight_ih_l1',
+                                         'weight_hh_l1',
+                                         'bias_ih_l1',
+                                         'bias_hh_l1']
+        """
+        for param in module._flat_weights_names:
+
+            if "weight" in param:
+                nn.init.xavier_uniform_(module._parameters[param])
+
+
+class Seq2SeqEncoder(Encoder):
+    def __init__(self, vocab_size, embed_size,
+                 num_hiddens, num_layers, dropout=0):
+        super().__init__()
+        # an embedding layer to obtain the feature vector for each token in the input sequence.
+        # The weight of an embedding layer is a matrix,
+        # number of rows corresponds to the size of the input vocabulary (vocab_size);
+        # number of columns corresponds to the feature vector’s dimension (embed_size).
+        # For any input token index i, the embedding layer fetches the i-th row (starting from 0) of 
+        # the weight matrix to return its feature vector
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.rnn = GRU(embed_size, num_hiddens, num_layers, dropout)
+        self.apply(init_seq2seq)
+
+    def forward(self, X, *args):
+        # X shape: (batch_size, num_steps)
+        embs = self.embedding(transpose(X).type(torch.int64))
+        # embs shape: (num_steps, batch_size, embed_size)
+        outputs, state = self.rnn(embs)
+        # outputs shape: (num_steps, batch_size, num_hiddens)
+        # state shape: (num_layers, batch_size, num_hiddens)
+        return outputs, state
+    
+
+class EncoderDecoder(Classifier):
+    def __init__(self, encoder, decoder):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+
+    def forward(self, enc_X, dec_X, *args):
+        # the encoder is used to produce the encoded state
+        enc_all_outputs = self.encoder(enc_X, *args)
+        # this state will be used by the decoder as one of its input.
+        dec_state = self.decoder.init_state(enc_all_outputs, *args)
+        return self.decoder(dec_X, dec_state)[0]
+    
+    def predict_step(self, batch, device, num_steps, save_attention_weights=False):
+        batch = [to(a, device) for a in batch]
+        
+        src, tgt, src_valid_len, _ = batch
+        enc_all_outputs = self.encoder(src, src_valid_len)
+        dec_state = self.decoder.init_state(enc_all_outputs, src_valid_len)
+        outputs, attention_weights = [tgt[:, 0].unsqueeze(1), ], []
+        for _ in range(num_steps):
+            Y, dec_state = self.decoder(outputs[-1], dec_state)
+            outputs.append(Y.argmax(2))
+            # Save attention weights (to be covered later)
+            if save_attention_weights:
+                attention_weights.append(self.decoder.attention_weights)
+        return torch.cat(outputs[1:], 1), attention_weights
+        
+    
+class Seq2Seq(EncoderDecoder):
+    def __init__(self, encoder, decoder, tgt_pad, lr):
+        super().__init__(encoder, decoder)
         self.save_hyperparameters()
-        self.rnn = nn.GRU(num_inputs, num_hiddens, num_layers,
-                          dropout=dropout)
         
-        
-class MTFraEng(DataModule):
-    """The English-French dataset."""
-    def __init__(self, batch_size, num_steps=9, num_train=512, num_val=128):
-        """Defined in :numref:`sec_machine_translation`"""
-        super(MTFraEng, self).__init__()
-        self.save_hyperparameters()
-        self.arrays, self.src_vocab, self.tgt_vocab = self._build_arrays(
-            self._download())
-        
-    def _download(self):
-        extract(download(
-            DATA_URL+'fra-eng.zip', self.root))
-        with open(self.root + '/fra-eng/fra.txt', encoding='utf-8') as f:
-            return f.read()
+    def forward(self, enc_X, dec_X, *args):
+        # the encoder is used to produce the encoded state
+        enc_all_outputs = self.encoder(enc_X, *args)
+        # this state will be used by the decoder as one of its input.
+        dec_state = self.decoder.init_state(enc_all_outputs, *args)
+        return self.decoder(dec_X, dec_state)[0]
 
-    def _preprocess(self, text):
-        """Defined in :numref:`sec_machine_translation`"""
-        # Replace non-breaking space with space
-        text = text.replace('\u202f', ' ').replace('\xa0', ' ')
-        # Insert space between words and punctuation marks
-        no_space = lambda char, prev_char: char in ',.!?' and prev_char != ' '
-        out = [' ' + char if i > 0 and no_space(char, text[i - 1]) else char
-               for i, char in enumerate(text.lower())]
-        return ''.join(out)
+    def validation_step(self, batch):
+        Y_hat = self(*batch[:-1])
+        self.plot('loss', self.loss(Y_hat, batch[-1]), train=False)
 
-    def _tokenize(self, text, max_examples=None):
-        """Defined in :numref:`sec_machine_translation`"""
-        src, tgt = [], []
-        for i, line in enumerate(text.split('\n')):
-            if max_examples and i > max_examples: break
-            parts = line.split('\t')
-            if len(parts) == 2:
-                # Skip empty tokens
-                src.append([t for t in f'{parts[0]} <eos>'.split(' ') if t])
-                tgt.append([t for t in f'{parts[1]} <eos>'.split(' ') if t])
-        return src, tgt
+    def configure_optimizers(self):
+        # Adam optimizer is used here
+        return torch.optim.Adam(self.parameters(), lr=self.lr)
 
-    def _build_arrays(self, raw_text, src_vocab=None, tgt_vocab=None):
-        def _build_array(sentences, vocab, is_tgt=False):
-            pad_or_trim = lambda seq, t: (
-                seq[:t] if len(seq) > t else seq + ['<pad>'] * (t - len(seq)))
-            sentences = [pad_or_trim(s, self.num_steps) for s in sentences]
-            if is_tgt:
-                sentences = [['<bos>'] + s for s in sentences]
-            if vocab is None:
-                vocab = Vocab(sentences, min_freq=2)
-            array = tensor([vocab[s] for s in sentences])
-            valid_len = reduce_sum(
-                astype(array != vocab['<pad>'], int32), 1)
-            return array, vocab, valid_len
-        src, tgt = self._tokenize(self._preprocess(raw_text),
-                                  self.num_train + self.num_val)
-        src_array, src_vocab, src_valid_len = _build_array(src, src_vocab)
-        tgt_array, tgt_vocab, _ = _build_array(tgt, tgt_vocab, True)
-        return ((src_array, tgt_array[:,:-1], src_valid_len, tgt_array[:,1:]),
-                src_vocab, tgt_vocab)
-
-    def get_dataloader(self, train):
-        """Defined in :numref:`subsec_loading-seq-fixed-len`"""
-        idx = slice(0, self.num_train) if train else slice(self.num_train, None)
-        return self.get_tensorloader(self.arrays, train, idx)
-
-    def build(self, src_sentences, tgt_sentences):
-        """Defined in :numref:`subsec_loading-seq-fixed-len`"""
-        raw_text = '\n'.join([src + '\t' + tgt for src, tgt in zip(
-            src_sentences, tgt_sentences)])
-        arrays, _, _ = self._build_arrays(
-            raw_text, self.src_vocab, self.tgt_vocab)
-        return arrays
->>>>>>> 4299bd5... update ch10 ch11
+    def loss(self, Y_hat, Y):
+        # Loss Function with Masking
+        """
+        Recall that <pad> tokens are appended to the end of sequences 
+        so sequences of varying lengths can be efficiently loaded in minibatches of the same shape.
+        However, prediction of padding tokens should be excluded from loss calculations. 
+        To this end, we can mask irrelevant entries with zero values 
+        so that multiplication of any irrelevant prediction with zero equals to zero.
+        """
+        l = super().loss(Y_hat, Y, averaged=False)
+        mask = (Y.reshape(-1) != self.tgt_pad).type(torch.float32)
+        return (l*mask).sum()/mask.sum()
+    
+    
+def bleu(pred_seq, label_seq, k):  #@save
+    """Compute the BLEU."""
+    pred_tokens, label_tokens = pred_seq.split(' '), label_seq.split(' ')
+    len_pred, len_label = len(pred_tokens), len(label_tokens)
+    score = math.exp(min(0, 1 - len_label / len_pred))
+    for n in range(1, min(k, len_pred) + 1):
+        num_matches, label_subs = 0, collections.defaultdict(int)
+        for i in range(len_label - n + 1):
+            label_subs[' '.join(label_tokens[i: i + n])] += 1
+        for i in range(len_pred - n + 1):
+            if label_subs[' '.join(pred_tokens[i: i + n])] > 0:
+                num_matches += 1
+                label_subs[' '.join(pred_tokens[i: i + n])] -= 1
+        score *= math.pow(num_matches / (len_pred - n + 1), math.pow(0.5, n))
+    return score
